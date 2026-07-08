@@ -95,6 +95,10 @@ class MemoryConfig(BaseModel):
     """openviking 记忆服务配置。"""
 
     openviking_endpoint: str = "http://openviking.local:8000"
+    openviking_account: str = ""   # openviking 账户名
+    openviking_user: str = ""      # openviking 用户名
+    openviking_api_key: str = ""   # openviking API 密钥
+    openviking_agent: str = ""     # openviking Agent 标识
     projects: dict[str, ProjectMemoryConfig] = Field(default_factory=dict)
     global_namespace: str = "global"
 

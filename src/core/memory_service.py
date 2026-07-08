@@ -30,6 +30,18 @@ class MemoryService:
         # 去除 endpoint 末尾可能的斜杠，避免拼接出双斜杠
         self._endpoint = config.openviking_endpoint.rstrip("/")
         self._global_namespace = config.global_namespace
+        # 构建认证请求头
+        self._headers: dict[str, str] = {
+            "Content-Type": "application/json",
+        }
+        if config.openviking_account:
+            self._headers["X-Account"] = config.openviking_account
+        if config.openviking_user:
+            self._headers["X-User"] = config.openviking_user
+        if config.openviking_api_key:
+            self._headers["Authorization"] = f"Bearer {config.openviking_api_key}"
+        if config.openviking_agent:
+            self._headers["X-Agent"] = config.openviking_agent
 
     def _get_namespace(self, project_id: str) -> str:
         """获取项目的记忆 namespace。
@@ -180,7 +192,7 @@ class MemoryService:
         url = f"{self._endpoint}/api/v1/memory/{namespace}/{key}"
         try:
             async with httpx.AsyncClient(timeout=self.DEFAULT_TIMEOUT) as client:
-                resp = await client.delete(url)
+                resp = await client.delete(url, headers=self._headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     return bool(data.get("success", False))
@@ -223,7 +235,7 @@ class MemoryService:
         url = f"{self._endpoint}/api/v1/memory/list"
         try:
             async with httpx.AsyncClient(timeout=self.DEFAULT_TIMEOUT) as client:
-                resp = await client.get(url, params=params)
+                resp = await client.get(url, params=params, headers=self._headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     return data.get("results", [])
@@ -254,7 +266,7 @@ class MemoryService:
         url = f"{self._endpoint}{path}"
         try:
             async with httpx.AsyncClient(timeout=self.DEFAULT_TIMEOUT) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers=self._headers)
                 if resp.status_code == 200:
                     return resp.json()
                 logger.warning(

@@ -1,0 +1,53 @@
+server:
+  transport: stdio            # stdio | sse
+  port: 8080                  # SSE 模式时使用
+
+gitlab:
+  url: "https://gitlab.local.example.com"
+  username: "${GITLAB_USERNAME}"
+  password: "${GITLAB_PASSWORD}"
+  projects:
+    - id: "backend-service"
+      name: "后端服务"
+      source_url: "https://gitlab.local.example.com/team/backend-service"
+      default_branch: "main"
+      language: "java"
+    - id: "frontend-app"
+      name: "前端应用"
+      source_url: "https://gitlab.local.example.com/team/frontend-app"
+      default_branch: "develop"
+      language: "typescript"
+
+llm:
+  base_url: "https://api.openai.com/v1"
+  api_key: "${LLM_API_KEY}"
+  model: "gpt-4o"                    # 主模型 ID，用于代码深度解读
+  summary_model: "gpt-4o-mini"      # 摘要模型 ID，用于同步摘要生成
+  temperature: 0.3
+  max_reasoning_steps: 15
+  max_tokens_per_read: 8000
+
+embedding:
+  base_url: "https://api.openai.com/v1"
+  api_key: "${LLM_API_KEY}"
+  model: "text-embedding-3-small"
+
+index:
+  storage_path: "./data/index"
+  chunk_size: 500
+  chunk_overlap: 50
+
+scheduler:
+  sync_interval_cron: "*/30 * * * *"
+  full_sync_on_start: true
+
+memory:
+  openviking_endpoint: "http://openviking.local:8000"
+  projects:
+    backend-service:
+      namespace: "proj_backend"
+    frontend-app:
+      namespace: "proj_frontend"
+  global_namespace: "global"
+
+data_dir: "./data"

@@ -222,7 +222,10 @@ class CodeSyncScheduler:
     async def _full_sync(
         self, project_id: str, ctx: ProjectContext
     ) -> dict:
-        """全量同步：拉取所有文件，重建索引和调用图。
+        """全量同步：通过 git clone 拉取整个仓库，重建索引和调用图。
+
+        使用 git clone 替代 GitLab API 逐文件拉取，速度快几个数量级。
+        克隆后从本地文件系统读取文件内容进行索引。
 
         Args:
             project_id: 项目 ID
@@ -231,55 +234,62 @@ class CodeSyncScheduler:
         Returns:
             同步结果字典
         """
-        project_path = ctx.config.get_project_path()
+        source_url = ctx.config.source_url
         ref = ctx.config.default_branch
         language = ctx.config.language
 
-        logger.info(f"开始全量同步: {project_id}")
+        logger.info(f"开始全量同步(git clone): {project_id}")
 
-        # 1. 从 GitLab 获取文件树
-        file_tree = self._gitlab_client.get_file_tree(
-            project_path, ref=ref, recursive=True
+        # 1. 通过 git clone 拉取仓库到 CodeStorage 的代码目录
+        clone_success = self._gitlab_client.clone_repository(
+            source_url=source_url,
+            target_dir=ctx.storage._base_path,
+            branch=ref,
         )
+        if not clone_success:
+            return {
+                "project_id": project_id,
+                "sync_type": "error",
+                "files_synced": 0,
+                "files_deleted": 0,
+                "new_sha": None,
+                "summary": "git clone 失败",
+            }
 
-        # 2. 过滤出代码文件（blob 类型，排除二进制/图片等）
-        code_files = [
-            item
-            for item in file_tree
-            if item.get("type") == "blob"
-            and self._is_code_file(item.get("path", ""))
-        ]
+        # 2. 从本地存储列出所有文件
+        all_files = ctx.storage.get_all_files()
+        # 过滤出代码文件（排除二进制、.git 目录等）
+        code_files = [f for f in all_files if self._is_code_file(f)]
         logger.info(
-            f"全量同步 {project_id}: 文件树 {len(file_tree)} 项，"
+            f"全量同步 {project_id}: 本地文件 {len(all_files)} 个，"
             f"代码文件 {len(code_files)} 个"
         )
 
-        # 清空旧索引，确保干净重建
+        # 3. 清空旧索引，确保干净重建
         ctx.index.clear()
 
-        # 3. 逐个拉取文件内容，保存到 CodeStorage
-        # 4. 为每个文件建立 CodeIndex 索引
+        # 4. 逐个从本地读取文件内容并建立索引
         files_synced = 0
-        for item in code_files:
-            file_path = item["path"]
+        for file_path in code_files:
             try:
-                content = self._gitlab_client.get_file_content(
-                    project_path, file_path, ref=ref
-                )
-                ctx.storage.save_file(file_path, content)
+                content = ctx.storage.read_file(file_path)
                 ctx.index.index_file(file_path, content, language)
                 files_synced += 1
+                if files_synced % 50 == 0:
+                    logger.info(
+                        f"全量同步 {project_id}: 已索引 {files_synced}/{len(code_files)} 个文件"
+                    )
             except Exception as e:
                 logger.warning(
-                    f"全量同步 {project_id}: 拉取文件失败 {file_path}: {e}"
+                    f"全量同步 {project_id}: 索引文件失败 {file_path}: {e}"
                 )
 
-        # 5. 构建调用图 (CallGraph.build_from_storage)
-        # 置空已有调用图以强制重建
+        # 5. 构建调用图
         ctx.call_graph = None
         self._project_manager.ensure_call_graph(project_id)
 
         # 6. 获取最新 commit SHA，更新同步状态
+        project_path = ctx.config.get_project_path()
         latest_sha = self._gitlab_client.get_last_commit_sha(
             project_path, ref
         )

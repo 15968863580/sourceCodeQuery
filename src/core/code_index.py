@@ -60,8 +60,9 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
             raise RuntimeError("没有可用的 embedding 函数")
 
         # OpenAI API 单次请求限制，分批处理
+        # 阿里云 text-embedding 系列限制每批最多 10 条
         all_embeddings: list[list[float]] = []
-        batch_size = 100
+        batch_size = 10
         for i in range(0, len(input), batch_size):
             batch = input[i : i + batch_size]
             # 过滤空字符串，避免 API 报错

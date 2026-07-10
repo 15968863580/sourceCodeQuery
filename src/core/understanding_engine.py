@@ -101,6 +101,7 @@ class UnderstandingEngine:
         # 3. ReAct 推理循环
         try:
             for step in range(1, max_steps + 1):
+                logger.info(f"--- 推理步骤 {step}/{max_steps} ---")
                 response = await self._call_llm(messages, tools=self._tools)
                 message = response.choices[0].message
 
@@ -135,7 +136,7 @@ class UnderstandingEngine:
                         args = {}
 
                     action_desc = self._format_action(name, args)
-                    logger.debug(f"步骤 {step} 工具调用: {action_desc}")
+                    logger.info(f"步骤 {step} 工具调用: {action_desc}")
 
                     result_text = await self._execute_tool(name, args)
                     truncated_result = self._truncate(result_text, _MAX_TOOL_RESULT_CHARS)
@@ -852,12 +853,18 @@ class UnderstandingEngine:
         if tools:
             kwargs["tools"] = tools
 
-        logger.debug(
+        logger.info(
             f"调用 LLM model={use_model}, "
             f"messages={len(messages)}, "
             f"tools={len(tools) if tools else 'none'}"
         )
-        return await self._client.chat.completions.create(**kwargs)
+        try:
+            return await self._client.chat.completions.create(
+                **kwargs, timeout=120
+            )
+        except Exception as e:
+            logger.error(f"LLM 调用失败: {type(e).__name__}: {e}")
+            raise
 
     @staticmethod
     def _format_action(name: str, args: dict) -> str:

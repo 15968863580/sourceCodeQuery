@@ -40,6 +40,8 @@ class CodeNavigation:
     def search_code(self, query: str, limit: int = 10) -> list[dict]:
         """语义搜索代码，快速定位起点。
 
+        优先使用向量语义搜索（精确），失败时回退到本地关键词搜索（兜底）。
+
         Args:
             query: 搜索查询语句
             limit: 返回结果数量上限
@@ -47,14 +49,48 @@ class CodeNavigation:
         Returns:
             结果列表，每项包含 file_path、start_line、end_line、content、score
         """
-        results = self._index.search(query, limit=limit)
-        logger.debug(
-            f"语义搜索 '{query}': 返回 {len(results)} 条结果"
-        )
-        return results
+        try:
+            results = self._index.search(query, limit=limit)
+            if results:
+                logger.debug(
+                    f"语义搜索 '{query}': 向量索引返回 {len(results)} 条结果"
+                )
+                return results
+        except Exception as e:
+            logger.warning(f"向量语义搜索失败，回退到本地关键词搜索: {e}")
+
+        # 回退：从查询中提取关键词做本地搜索
+        keywords = self._extract_keywords(query)
+        all_results: list[dict] = []
+        for kw in keywords:
+            all_results.extend(
+                self.search_keyword_local(kw, limit=limit)
+            )
+            if len(all_results) >= limit:
+                break
+        # 去重
+        seen = set()
+        deduped: list[dict] = []
+        for r in all_results:
+            if r["file_path"] not in seen:
+                seen.add(r["file_path"])
+                deduped.append(r)
+        return deduped[:limit]
+
+    @staticmethod
+    def _extract_keywords(query: str) -> list[str]:
+        """从自然语言查询中提取关键词用于回退搜索。"""
+        # 简单分词：按空格和中文字符边界分割
+        import re
+
+        tokens = re.findall(r"[\w]+", query)
+        # 过滤掉太短的词
+        return [t for t in tokens if len(t) >= 2]
 
     def search_keyword(self, keyword: str, limit: int = 10) -> list[dict]:
         """关键词搜索代码。
+
+        优先使用 ChromaDB 索引搜索（快），失败时回退到本地文件搜索（兜底）。
 
         Args:
             keyword: 关键词
@@ -63,11 +99,80 @@ class CodeNavigation:
         Returns:
             结果列表
         """
-        results = self._index.search_keyword(keyword, limit=limit)
+        try:
+            results = self._index.search_keyword(keyword, limit=limit)
+            if results:
+                logger.debug(
+                    f"关键词搜索 '{keyword}': ChromaDB 返回 {len(results)} 条结果"
+                )
+                return results
+        except Exception as e:
+            logger.warning(f"ChromaDB 关键词搜索失败，回退到本地搜索: {e}")
+
+        # 回退：本地文件搜索
+        return self.search_keyword_local(keyword, limit=limit)
+
+    def search_keyword_local(
+        self, keyword: str, limit: int = 10
+    ) -> list[dict]:
+        """本地关键词搜索（不依赖向量索引）。
+
+        遍历本地代码文件，搜索包含关键词的文件和匹配行。
+
+        Args:
+            keyword: 搜索关键词
+            limit: 返回结果数量上限
+
+        Returns:
+            结果列表，每项包含 file_path、matching_lines、content_snippet
+        """
+        results: list[dict] = []
+        keyword_lower = keyword.lower()
+        all_files = self._storage.get_all_files()
+
+        for file_path in all_files:
+            if not self._is_code_file(file_path):
+                continue
+            try:
+                content = self._storage.read_file(file_path)
+            except Exception:
+                continue
+
+            lines = content.splitlines()
+            matching_lines: list[dict] = []
+            for i, line in enumerate(lines, 1):
+                if keyword_lower in line.lower():
+                    matching_lines.append(
+                        {
+                            "line": i,
+                            "content": line.strip()[:200],
+                        }
+                    )
+                    if len(matching_lines) >= 5:
+                        break
+
+            if matching_lines:
+                results.append(
+                    {
+                        "file_path": file_path,
+                        "matching_lines": matching_lines,
+                        "content_snippet": matching_lines[0]["content"],
+                    }
+                )
+                if len(results) >= limit:
+                    break
+
         logger.debug(
-            f"关键词搜索 '{keyword}': 返回 {len(results)} 条结果"
+            f"本地关键词搜索 '{keyword}': 找到 {len(results)} 个文件"
         )
         return results
+
+    @staticmethod
+    def _is_code_file(file_path: str) -> bool:
+        """判断是否为代码文件（排除 .git、二进制等）。"""
+        from src.core.scheduler import CodeSyncScheduler
+
+        return CodeSyncScheduler._is_code_file(file_path)
 
     def read_file(self, file_path: str) -> str:
         """读取完整文件内容。

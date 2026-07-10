@@ -2,12 +2,16 @@
 
 使用账号密码通过 OAuth2 密码授权获取访问令牌，
 通过项目路径（从 source_url 提取）访问仓库资源。
+支持 git clone 方式快速拉取整个仓库。
 """
 
 from __future__ import annotations
 
 import base64
+import shutil
+import subprocess
 import urllib.parse
+from pathlib import Path
 
 import gitlab
 import httpx
@@ -42,7 +46,141 @@ class GitLabClient:
         self._client = gitlab.Gitlab(
             url=config.url, oauth_token=token
         )
+        self._oauth_token = token
         logger.debug(f"初始化 GitLab 客户端: url={config.url}")
+
+    def _build_clone_url(self, source_url: str) -> str:
+        """构建带认证信息的 git clone URL。
+
+        将 OAuth2 token 注入到 URL 中，格式：
+        http://oauth2:{token}@host/path.git
+
+        Args:
+            source_url: 原始源码 URL
+
+        Returns:
+            带认证信息的 clone URL
+        """
+        parsed = urllib.parse.urlparse(source_url)
+        # 使用 oauth2 用户名 + token 认证
+        auth_url = parsed._replace(
+            netloc=f"oauth2:{self._oauth_token}@{parsed.netloc}"
+        )
+        return urllib.parse.urlunparse(auth_url)
+
+    def clone_repository(
+        self,
+        source_url: str,
+        target_dir: Path,
+        branch: str = "main",
+    ) -> bool:
+        """通过 git clone 拉取整个仓库到本地目录。
+
+        如果目标目录已存在且是 git 仓库，则执行 git pull 更新。
+        如果目标目录存在但非 git 仓库，先删除再克隆。
+
+        Args:
+            source_url: GitLab 项目源码 URL
+            target_dir: 本地目标目录
+            branch: 要拉取的分支
+
+        Returns:
+            克隆/更新成功返回 True，失败返回 False
+        """
+        clone_url = self._build_clone_url(source_url)
+        target_dir = Path(target_dir)
+
+        # 如果目标目录已存在且是 git 仓库，执行 pull
+        git_dir = target_dir / ".git"
+        if git_dir.exists():
+            logger.info(f"仓库已存在，执行 git pull: {target_dir}")
+            try:
+                # 切换到目标分支并拉取最新代码
+                subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=str(target_dir),
+                    capture_output=True,
+                    timeout=120,
+                )
+                subprocess.run(
+                    ["git", "checkout", branch],
+                    cwd=str(target_dir),
+                    capture_output=True,
+                    timeout=30,
+                )
+                result = subprocess.run(
+                    ["git", "pull", "origin", branch],
+                    cwd=str(target_dir),
+                    capture_output=True,
+                    timeout=120,
+                )
+                if result.returncode == 0:
+                    logger.info(f"git pull 成功: {target_dir}")
+                    return True
+                else:
+                    logger.error(
+                        f"git pull 失败: {result.stderr.decode('utf-8', errors='replace')}"
+                    )
+                    return False
+            except subprocess.TimeoutExpired:
+                logger.error(f"git pull 超时: {target_dir}")
+                return False
+            except Exception as e:
+                logger.error(f"git pull 异常: {e}")
+                return False
+
+        # 目标目录不存在或非 git 仓库，执行 clone
+        if target_dir.exists():
+            # 非空目录且不是 git 仓库，先清空
+            shutil.rmtree(target_dir)
+
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"开始 git clone: {source_url} -> {target_dir}")
+        try:
+            result = subprocess.run(
+                [
+                    "git", "clone",
+                    "--branch", branch,
+                    "--depth", "1",  # 浅克隆，只取最新一次提交，加速拉取
+                    clone_url,
+                    str(target_dir),
+                ],
+                capture_output=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                logger.info(f"git clone 成功: {target_dir}")
+                return True
+            else:
+                stderr = result.stderr.decode("utf-8", errors="replace")
+                logger.error(f"git clone 失败: {stderr}")
+                # 浅克隆失败时尝试普通克隆
+                logger.info("尝试普通克隆（非浅克隆）...")
+                result = subprocess.run(
+                    [
+                        "git", "clone",
+                        "--branch", branch,
+                        clone_url,
+                        str(target_dir),
+                    ],
+                    capture_output=True,
+                    timeout=600,
+                )
+                if result.returncode == 0:
+                    logger.info(f"普通克隆成功: {target_dir}")
+                    return True
+                else:
+                    logger.error(
+                        f"普通克隆也失败: {result.stderr.decode('utf-8', errors='replace')}"
+                    )
+                    return False
+        except subprocess.TimeoutExpired:
+            logger.error(f"git clone 超时: {target_dir}")
+            return False
+        except Exception as e:
+            logger.error(f"git clone 异常: {e}")
+            return False
 
     @staticmethod
     def _authenticate(url: str, username: str, password: str) -> str:
@@ -122,14 +260,15 @@ class GitLabClient:
     def _get_project(self, project_path: str):
         """获取项目对象（内部方法）。
 
+        python-gitlab 内部会自动 URL 编码项目路径，无需手动编码。
+
         Args:
             project_path: 项目路径，如 "group/project"
 
         Returns:
             python-gitlab 的 Project 对象
         """
-        encoded = self._encode_project_path(project_path)
-        return self._client.projects.get(encoded)
+        return self._client.projects.get(project_path)
 
     def get_file_tree(
         self,

@@ -71,6 +71,8 @@ class CodeStorage:
     def read_file(self, file_path: str) -> str:
         """读取完整文件内容。
 
+        自动尝试 UTF-8 和 GBK 两种编码，兼容中文项目。
+
         Args:
             file_path: 相对路径
 
@@ -83,7 +85,11 @@ class CodeStorage:
         full_path = self._resolve_path(file_path)
         if not full_path.is_file():
             raise FileNotFoundError(f"文件不存在: {file_path}")
-        content = full_path.read_text(encoding="utf-8")
+        # 先尝试 UTF-8，失败则用 GBK
+        try:
+            content = full_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = full_path.read_text(encoding="gbk", errors="replace")
         logger.debug(f"读取文件: {file_path}, 大小={len(content)}")
         return content
 

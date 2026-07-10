@@ -206,6 +206,7 @@ class ProjectManager:
     def ensure_call_graph(self, project_id: str) -> CallGraph | None:
         """延迟初始化并构建项目的调用图。
 
+        优先从磁盘缓存加载（快），缓存不存在时重新构建（慢）并保存。
         由于 build_from_storage 需要先有代码，CallGraph 在首次需要时
         （通常在代码同步完成后）才创建。若已构建则直接返回，不重复构建。
 
@@ -221,8 +222,42 @@ class ProjectManager:
             return None
         if ctx.call_graph is not None:
             return ctx.call_graph
+
+        # 尝试从磁盘缓存加载
+        import pickle
+        from pathlib import Path
+
+        cache_dir = Path(f"data/projects/{project_id}/callgraph")
+        cache_file = cache_dir / "callgraph.pkl"
+        if cache_file.exists():
+            logger.info(f"从缓存加载调用图: {project_id}")
+            try:
+                with open(cache_file, "rb") as f:
+                    ctx.call_graph = pickle.load(f)
+                logger.info(
+                    f"调用图缓存加载成功: {project_id}, "
+                    f"函数数={len(ctx.call_graph._functions)}"
+                )
+                return ctx.call_graph
+            except Exception as e:
+                logger.warning(f"调用图缓存加载失败，重新构建: {e}")
+
+        # 缓存不存在，重新构建
         logger.info(f"延迟初始化调用图: {project_id}")
         call_graph = CallGraph(project_id)
         call_graph.build_from_storage(ctx.storage)
         ctx.call_graph = call_graph
+
+        # 保存到磁盘缓存
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "wb") as f:
+                pickle.dump(call_graph, f)
+            logger.info(
+                f"调用图已缓存到磁盘: {project_id}, "
+                f"函数数={len(call_graph._functions)}"
+            )
+        except Exception as e:
+            logger.warning(f"调用图缓存保存失败: {e}")
+
         return ctx.call_graph
